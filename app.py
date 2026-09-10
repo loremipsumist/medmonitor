@@ -1,92 +1,127 @@
 from datetime import date
-import joblib
+import numpy as np
 import pandas as pd
+from sklearn.compose import ColumnTransformer
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
 import streamlit as st
 
 st.set_page_config(
-    page_title="Online Testing & Monitoring Quality Medicines", layout="wide"
+    page_title="Medicine Quality Prediction System", layout="wide"
 )
 
 
-# Authentication Simulation (Fig. 3)
-def check_auth():
-    if "authenticated" not in st.session_state:
-        st.session_state.authenticated = False
+# Train model on-the-fly and cache it in memory
+@st.cache_resource
+def get_trained_model_and_dataset():
+    np.random.seed(42)
+    n = 2000
+    categories = [
+        "Antibiotic",
+        "Analgesic",
+        "Antiviral",
+        "Antihistamine",
+        "Antifungal",
+    ]
+    dosage_forms = ["Tablet", "Syrup", "Injection", "Cream", "Capsule"]
+    manufacturers = ["Pfizer", "Novartis", "Cipla", "SunPharma", "GSK", "Pluxe"]
 
-    if not st.session_state.authenticated:
-        st.markdown("<h2 style='text-align: center;'>Login Page</h2>", unsafe_allow_html=True)
-        col1, col2, col3 = st.columns([1, 1, 1])
-        with col2:
-            username = st.text_input("Username", value="admin")
-            password = st.text_input("Password", type="password", value="admin")
-            if st.button("Login", use_container_width=True):
-                if username == "admin" and password == "admin":
-                    st.session_state.authenticated = True
-                    st.rerun()
-                else:
-                    st.error("Invalid credentials.")
-        return False
-    return True
+    df = pd.DataFrame(
+        {
+            "category": np.random.choice(categories, n),
+            "dosage_form": np.random.choice(dosage_forms, n),
+            "manufacturer": np.random.choice(manufacturers, n),
+            "strength_mg": np.random.choice([100, 250, 500, 650, 1000], n),
+            "temp_celsius": np.random.normal(loc=24, scale=6, size=n),
+            "humidity_pct": np.random.normal(loc=55, scale=12, size=n),
+            "days_to_expiry": np.random.randint(-60, 730, size=n),
+        }
+    )
+
+    df["is_consumable"] = 1
+    df.loc[df["days_to_expiry"] <= 0, "is_consumable"] = 0
+    df.loc[
+        (df["temp_celsius"] > 32) | (df["temp_celsius"] < 2), "is_consumable"
+    ] = 0
+    df.loc[df["humidity_pct"] > 75, "is_consumable"] = 0
+
+    X = df.drop(columns=["is_consumable"])
+    y = df["is_consumable"]
+
+    preprocessor = ColumnTransformer(
+        transformers=[
+            (
+                "cat",
+                OneHotEncoder(handle_unknown="ignore"),
+                ["category", "dosage_form", "manufacturer"],
+            ),
+            (
+                "num",
+                StandardScaler(),
+                ["strength_mg", "temp_celsius", "humidity_pct", "days_to_expiry"],
+            ),
+        ]
+    )
+
+    pipeline = Pipeline(
+        [
+            ("prep", preprocessor),
+            ("clf", RandomForestClassifier(n_estimators=100, random_state=42)),
+        ]
+    )
+
+    pipeline.fit(X, y)
+    return pipeline, df
 
 
-if check_auth():
-    # Load Model
-    @st.cache_resource
-    def load_model():
-        return joblib.load("medicine_quality_pipeline.pkl")
+model, df = get_trained_model_and_dataset()
 
-    try:
-        model = load_model()
-    except FileNotFoundError:
-        st.error(
-            "Model artifact not found. Please execute `python train_model.py` first."
-        )
-        st.stop()
+# Login State
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
 
-    # Navigation Sidebar
-    st.sidebar.title("System Navigation")
-    menu = st.sidebar.radio(
-        "Menu", ["Welcome Page", "View Dataset", "Predict Medicine", "Dashboard"]
+if not st.session_state.logged_in:
+    st.markdown(
+        "<h2 style='text-align: center;'>Login Page</h2>", unsafe_allow_html=True
+    )
+    col1, col2, col3 = st.columns([1, 1, 1])
+    with col2:
+        user = st.text_input("Username", value="admin")
+        pwd = st.text_input("Password", type="password", value="admin")
+        if st.button("Login", use_container_width=True):
+            if user == "admin" and pwd == "admin":
+                st.session_state.logged_in = True
+                st.rerun()
+            else:
+                st.error("Invalid credentials.")
+else:
+    st.sidebar.title("Navigation")
+    choice = st.sidebar.radio(
+        "Menu",
+        ["Welcome Page", "View Dataset", "Predict Medicine", "Dashboard"],
     )
 
     if st.sidebar.button("Logout"):
-        st.session_state.authenticated = False
+        st.session_state.logged_in = False
         st.rerun()
 
-    # 1. Welcome Page (Fig. 2)
-    if menu == "Welcome Page":
-        st.markdown(
-            """
-            <div style="background-color: #0f172a; padding: 40px; border-radius: 10px; text-align: center; color: white;">
-                <h1 style="color: #38bdf8;">Medicine Prediction System</h1>
-                <p style="font-size: 1.15rem; max-width: 800px; margin: 0 auto; line-height: 1.6;">
-                    The Medicine Prediction System is an intelligent healthcare application developed using Machine Learning techniques.
-                    It analyzes medicine-related information and predicts the appropriate medicine classification based on the trained dataset.
-                </p>
-                <br/>
-                <p style="color: #94a3b8;">Provides dataset training, prediction, and dashboard monitoring features to deliver fast, accurate, and user-friendly prediction results.</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
+    if choice == "Welcome Page":
+        st.title("Medicine Prediction System")
+        st.info(
+            "An intelligent healthcare application utilizing Machine Learning to predict medicine quality and consumable status."
         )
 
-    # 2. View Dataset Page (Fig. 4)
-    elif menu == "View Dataset":
-        st.title("Medicine Quality Dataset")
-        try:
-            df = pd.read_csv("medicine_training_data.csv")
-            st.write(f"Total Records: {len(df)}")
-            st.dataframe(df, use_container_width=True)
-        except FileNotFoundError:
-            st.warning("Training dataset CSV not found.")
+    elif choice == "View Dataset":
+        st.title("Trained Medicine Dataset")
+        st.write(f"Total entries: {len(df)}")
+        st.dataframe(df, use_container_width=True)
 
-    # 3. Predict Quality Page (Fig. 5 & Fig. 6)
-    elif menu == "Predict Medicine":
+    elif choice == "Predict Medicine":
         st.title("Medicine Quality Prediction")
-
-        with st.form("prediction_form"):
-            col1, col2 = st.columns(2)
-            with col1:
+        with st.form("input_form"):
+            c1, c2 = st.columns(2)
+            with c1:
                 med_name = st.text_input("Medicine Name", value="Amoxazole")
                 category = st.selectbox(
                     "Category",
@@ -98,77 +133,64 @@ if check_auth():
                         "Antifungal",
                     ],
                 )
-                dosage_form = st.selectbox(
+                dosage = st.selectbox(
                     "Dosage Form",
                     ["Tablet", "Syrup", "Injection", "Cream", "Capsule"],
                 )
-                manufacturer = st.selectbox(
+                mfg = st.selectbox(
                     "Manufacturer",
                     ["Pfizer", "Novartis", "Cipla", "SunPharma", "GSK", "Pluxe"],
                 )
-
-            with col2:
-                strength_mg = st.number_input(
+            with c2:
+                strength = st.number_input(
                     "Strength (mg)", min_value=10, max_value=2000, value=500
                 )
-                expiry_date = st.date_input(
-                    "Expiry Date", value=date.today().replace(year=date.today().year + 1)
+                exp = st.date_input(
+                    "Expiry Date",
+                    value=date.today().replace(year=date.today().year + 1),
                 )
                 temp = st.slider(
-                    "Storage Temperature (°C)",
-                    min_value=-5.0,
-                    max_value=50.0,
-                    value=22.0,
+                    "Storage Temperature (°C)", -5.0, 50.0, value=22.0
                 )
-                humidity = st.slider(
-                    "Storage Humidity (%)", min_value=10.0, max_value=100.0, value=50.0
-                )
+                humidity = st.slider("Storage Humidity (%)", 10.0, 100.0, value=50.0)
+            btn = st.form_submit_button(
+                "Predict Quality", use_container_width=True
+            )
 
-            submit = st.form_submit_button("Predict Quality Status", use_container_width=True)
-
-        if submit:
-            days_to_expiry = (expiry_date - date.today()).days
-
-            input_data = pd.DataFrame(
+        if btn:
+            days_left = (exp - date.today()).days
+            row = pd.DataFrame(
                 [
                     {
                         "category": category,
-                        "dosage_form": dosage_form,
-                        "manufacturer": manufacturer,
-                        "strength_mg": strength_mg,
+                        "dosage_form": dosage,
+                        "manufacturer": mfg,
+                        "strength_mg": strength,
                         "temp_celsius": temp,
                         "humidity_pct": humidity,
-                        "days_to_expiry": days_to_expiry,
+                        "days_to_expiry": days_left,
                     }
                 ]
             )
-
-            prediction = model.predict(input_data)[0]
-            confidence = model.predict_proba(input_data)[0][prediction] * 100
-
+            res = model.predict(row)[0]
             st.markdown("---")
             st.subheader("Prediction Result")
-            if prediction == 1:
+            if res == 1:
                 st.success(
-                    f"**Predicted Quality Status:** Good\n\n**Consumable Status:** Consumable (Confidence: {confidence:.1f}%)"
+                    "Predicted Quality Status: Good | Consumable Status: Consumable"
                 )
             else:
                 st.error(
-                    f"**Predicted Quality Status:** Poor / Compromised\n\n**Consumable Status:** Non-Consumable (Confidence: {confidence:.1f}%)"
+                    "Predicted Quality Status: Poor | Consumable Status: Non-Consumable"
                 )
 
-    # 4. Monitoring Dashboard (Fig. 1 System Layer)
-    elif menu == "Dashboard":
+    elif choice == "Dashboard":
         st.title("Quality Monitoring Dashboard")
-        df = pd.read_csv("medicine_training_data.csv")
-
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Total Batches Analyzed", len(df))
-        col2.metric(
-            "Consumable Rate",
-            f"{(df['is_consumable'].mean() * 100):.1f}%",
+        c1, c2 = st.columns(2)
+        c1.metric("Total Batches", len(df))
+        c2.metric(
+            "Consumable Ratio", f"{(df['is_consumable'].mean() * 100):.1f}%"
         )
-        col3.metric("Defect/Expired Rate", f"{((1 - df['is_consumable'].mean()) * 100):.1f}%")
-
-        st.subheader("Temperature vs. Consumability")
-        st.scatter_chart(df, x="temp_celsius", y="humidity_pct", color="is_consumable")
+        st.scatter_chart(
+            df, x="temp_celsius", y="humidity_pct", color="is_consumable"
+        )
